@@ -1,0 +1,300 @@
+---
+title: "Steepest_pseudo_code"
+author: "Matteo Rossi"
+date: '2023-07-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Response Surface Methodology with Steepest Ascent
+
+## Importing the useful packages
+
+```{r}
+library(dplyr)
+library(viridis)
+library(rsm)
+```
+
+## Importing the dataset
+
+```{r}
+path = "C:\\path\\to\\complete_df.csv"
+
+df = read.csv(path)
+
+df = df[df$Cleavage != 100, ] # removing the false 100 % cleavage (artifacts)
+df = df[, c(2, 3, 4)]
+colnames(df) = c("x1", "x2", "y") 
+head(df) ; dim(df)
+```
+
+## 
+
+```{r}
+Ground_Truth = rsm(y ~ SO(x1, x2), data=df)
+summary(Ground_Truth)
+```
+
+Interaction term not significant. Remove it from the model:
+
+New Model removing the non significant term:
+```{r}
+Ground_Truth = rsm(y ~ FO(x1, x2) + PQ(x1, x2), data=df)
+summary(Ground_Truth) # now all the terms are statistically significant 
+```
+
+This is the model that we will use, adding noise, to simulate the results of a real experiment. Now it is possible to get all the predictors coefficient significant, High multiple R square and R square adjusted, significant F-statistic and not significant lack of fit. 
+Moreover, it is possible to notice that the maximum of this surface is obtained at 48.92 degrees Celsius and pH = 8.41
+
+
+Plotting the 3D representation:
+```{r complete_persp}
+persp(Ground_Truth, x1~x2, col = viridis(100), contours = "colors",
+      zlab = "Response", 
+      xlabs=c("Factor1", "Factor2"),
+      main = "Response Surface")
+```
+
+## Useful functions:
+
+This function is useful for mapping the original variables with the coded variables:
+```{r}
+normal_to_coded_var <- function(input_df) {
+  # mapping between original and coded variables
+  temp_df <- input_df
+  
+  mean_x1 <- mean(temp_df$x1)
+  mean_x2 <- mean(temp_df$x2)
+  range_x1 <- max(temp_df$x1) - min(temp_df$x1)
+  range_x2 <- max(temp_df$x2) - min(temp_df$x2)
+  
+  temp_df$cX1 <- (temp_df$x1 - mean_x1) / (range_x1 / 2)
+  temp_df$cX2 <- (temp_df$x2 - mean_x2) / (range_x2 / 2)
+  
+  return(temp_df)
+}
+```
+
+This function is able to produce a two levels factorial design with 5 center points:
+```{r}
+full_factorial <- function(x_d1, y_d1, model=NULL, pars=NULL, cnt_point=TRUE) {
+  
+  # Inputs 2 arrays of coordinates, outputs a full factorial design
+  temp_df <- data.frame(x1 = rep(x_d1, each = length(y_d1)), x2 = rep(y_d1, length(x_d1)))
+  
+  if (cnt_point) { # add 5 central points
+    value = c(mean(temp_df$x1), mean(temp_df$x2))
+    for(i in 1:5) {
+      temp_df[nrow(temp_df) + 1, c('x1', 'x2')] = value
+    }
+  }
+  
+  
+  temp_df <- normal_to_coded_var(temp_df)  # Adding the variables coded -1, 0, +1
+  
+  return(temp_df)
+}
+```
+
+## Starting from a region of the Design Space:
+
+Using the full_factorial design to draw the first points:
+```{r}
+lower_1 = 35
+upper_1 = 40
+diff_1 = upper_1 - lower_1
+
+lower_2 = 7
+Upper_2 = 7.5
+diff_2 = upper_2 - lower_1
+
+initial_df = full_factorial(c(lower_1, upper_1), c(lower_1, upper_1)) 
+y_pred = predict(Ground_Truth, initial_df[, c("x1", "x2")]) # simulate the results of experiments
+initial_df$y = y_pred + rnorm(length(y_pred), 0, 0.2)
+
+coded_initial_df = as.coded.data(initial_df, # connection with the coded and natural variables
+                    cX1~(x1-mean(lower_1, upper_1))/(diff_1/2),
+                    cX2~(x2-mean(lower_1, upper_1))/(diff_2/2))
+coded_initial_df
+```
+
+## First Step: Fitting initial model:
+
+Modeling using a First order main effects with interaction model for understanding which is the path of steepest ascent:
+```{r}
+# with first order with interaction
+model_FO_int = rsm(y ~ FO(cX1, cX2) + TWI(cX1, cX2), coded_initial_df)
+summary(model_FO_int) # if the interaction is not significant --> use  a reduced model
+```
+
+If the model present the interaction term non-statistically significant,ss remove it:
+```{r}
+model_FO = rsm(y ~ FO(cX1, cX2), coded_initial_df)
+```
+
+Select the model, based on the goodness of fitness, the t-test for the predictors, the statistically not-significant lack of fitness. 
+
+Plotting the resulting fit and the points used in a contourplot:
+```{r final_factorial_design}
+initial_model =  rsm(y ~ FO(x1, x2), coded_initial_df)
+
+grid <- expand.grid(x1 = seq(min(coded_initial_df$x1)-1, max(coded_initial_df$x1)+1, length.out = 50),
+                    x2 = seq(min(coded_initial_df$x2)-0.1, max(coded_initial_df$x2)+0.1, length.out = 50))
+grid$predicted_response <- predict(initial_model, newdata=grid)
+
+filled.contour(x = unique(grid$x1),
+               y = unique(grid$x2),
+               z = matrix(grid$predicted_response, nrow = length(unique(grid$x2))),
+               color.palette = viridis,  # You can use a different color palette if you prefer.
+               xlab = "Temperature (ºC)",
+               ylab = "pH",
+               main = "Initial Factorial Design",
+               plot.axes = {axis(1); axis(2); points(coded_initial_df$x1, coded_initial_df$x2, pch=19)})
+
+```
+
+## Second Step: Steepest Ascent
+
+Since it is proposed a simulation, it is also possible to simulate the actual experiment result. This is the implemented function that allows to perform so:
+```{r}
+steepest_path = function(initial, delta_x1, ration_x2_x1, n){
+  # initial value = central point of the initial factorial design
+  # delta_x1 = difference in Temperature in the steepest ascent 
+  # ration_x2_x1 = result of the initial model, determining the steepest path
+  steepest_df = data.frame("x1" = initial[1], "x2" = initial[2])
+  delta_pH = delta_x1*ration_x2_x1
+  delta = c(delta_x1, delta_pH)
+  
+  new = steepest_df[1, ]
+  for(i in 2:n) {
+    new = new + delta
+    steepest_df[i, ] = new
+  }
+  steepest_df$y = predict(Ground_Truth, steepest_df[, c("x1", "x2")]) + rnorm(nrow(steepest_df), 0, 0.2)
+  return(steepest_df)
+}
+```
+
+Applying such function to obtain the data frame of interest:
+It is necessary to start form the center point of the initial two level factorial design.
+Moreover It is possible to choose for the value of delta of one variable. 
+Finally it is necessary to input the result of the prior model fitted, namely the ratio of factors that allow to obtain the steepest ascent. The last imput is the number of samples needed.
+```{r}
+steepest_df = steepest_path(initial = c(37.5, 7.25), delta_x1 = 1,
+                       ration_x2_x1 = 0.2024594/1.4666357, n = 11)
+steepest_df
+```
+Study the output in the following way: find where it lies the maximum.
+Such point will be later used in the final step as central point for the Central Composite design. 
+
+
+The highest point found correspond to the which iteration? 
+The best area of interest if found where the maximum is obtained following the steepest ascent:
+```{r}
+steepest_df[steepest_df$y == max(steepest_df$y),]
+```
+
+Plotting the steepest ascent result:
+```{r final_steepest}
+grid <- expand.grid(x1 = seq(min(steepest_df$x1)-1, max(steepest_df$x1)+1, length.out = 50),
+                    x2 = seq(min(steepest_df$x2)-0.1, max(steepest_df$x2)+0.1, length.out = 50))
+grid$predicted_response <- predict(Ground_Truth, newdata=grid)
+
+filled.contour(x = unique(grid$x1),
+               y = unique(grid$x2),
+               z = matrix(grid$predicted_response, nrow = length(unique(grid$x2))),
+               color.palette = viridis,  # You can use a different color palette if you prefer.
+               xlab = "$x_1$",
+               ylab = "$x_2$",
+               main = "Steepest Ascent path",
+               plot.axes = {axis(1); axis(2); points(steepest_df$x1, steepest_df$x2, pch=19)})
+```
+
+## Third Step: Central Composite Design
+
+It is necessary to perform a Central Composite Design, which is specifically suited for fitting a second order model. This is mandatory for obtaining a second order fit that allows to obtain a curvature and, in this way a maximum in the prediction. This is the function for achieving such solution:
+```{r}
+ccd = function(center, add_x1, add_x2) {
+  x1_plus_1 = center[1] + add_x1
+  x1_minus_1 = center[1] - add_x1
+  
+  x2_plus_1 = center[2] + add_x2
+  x2_minus_1 = center[2] - add_x2
+  
+  x1_new = c(x1_plus_1, x1_minus_1)
+  x2_new = c(x2_plus_1, x2_minus_1)
+  
+  full_factorial = output_model(x1_new, x2_new)
+  
+  axial_coded = data.frame("cX1" = c(sqrt(2), -sqrt(2), 0, 0),
+                           "cX2" = c(0, 0, sqrt(2), -sqrt(2)))
+  x1_plus_sqrt = center[1] + add_x1*sqrt(2)
+  x1_minus_sqrt = center[1] - add_x1*sqrt(2)
+  
+  x2_plus_sqrt = center[2] + add_x2*sqrt(2)
+  x2_minus_sqrt = center[2] - add_x2*sqrt(2)
+  
+  axial_design = data.frame("x1" = c(x1_plus_sqrt, x1_minus_sqrt, center[1], center[1]),
+                            "x2" = c(center[2], center[2], x2_plus_sqrt, x2_minus_sqrt))
+  axial_complete = cbind(axial_design, axial_coded)
+  
+  ccd_df = rbind(full_factorial, axial_complete)
+  
+  return(ccd_df)
+}
+
+```
+
+Applying the ccd function on the best point as center, and simulating the Experiement result 
+```{r}
+
+best = as.vector(as.matrix(steepest_df[steepest_df$y == max(steepest_df$y), c("x1", "x2")])) # best observation
+
+ccd_df = ccd(best, add_x1 = 1, add_x2 = 0.25) # perform the ccd
+ccd_df$y = predict(Ground_Truth, ccd_df[, c("x1", "x2")]) + + rnorm(nrow(ccd_df), 0, 0.2)
+ccd_df
+```
+
+Coding the data:
+```{r}
+ccd_df_coded = as.coded.data(ccd_df, 
+                             cX1~(x1-46.5)/0.5,
+                             cX2~(x2-8.492391)/0.25)
+ccd_df_coded
+```
+```{r}
+ccd_model = rsm(y ~ SO(cX1, cX2), data = ccd_df_coded)
+summary(ccd_model)
+```
+The second order term and the interaction term can be not significant. Adapt the model removing step by step some terms.
+
+Removing the term not significant, in this case the interaction term.
+```{r}
+ccd_model = rsm(y ~ FO(cX1, cX2) + PQ(cX1, cX2), data = ccd_df_coded)
+summary(ccd_model)
+```
+In the output there is the prediction of the stationary point (maximum in this case)!
+
+Producing the graph for the final step, the central composite design:
+```{r Central_composite_design}
+ccd =  rsm(y ~ FO(x1, x2) + PQ(x2), data = ccd_df_coded)
+
+grid <- expand.grid(x1 = seq(min(ccd_df_coded$x1)-0.5, max(ccd_df_coded$x1)+0.5, length.out = 50),
+                    x2 = seq(min(ccd_df_coded$x2)-0.1, max(ccd_df_coded$x2)+0.1, length.out = 50))
+grid$predicted_response <- predict(ccd, newdata=grid)
+
+filled.contour(x = unique(grid$x1),
+               y = unique(grid$x2),
+               z = matrix(grid$predicted_response, nrow = length(unique(grid$x2))),
+               color.palette = viridis,  # You can use a different color palette if you prefer.
+               xlab = "Temperature (ºC)",
+               ylab = "pH",
+               main = "Central Composite Design",
+               plot.axes = {axis(1); axis(2); points(ccd_df_coded$x1, ccd_df_coded$x2, pch=19)})
+```
+
+
